@@ -136,7 +136,9 @@ Two more providers run a coding agent on a subscription you already pay for, ins
 | `codex` | Codex | the contents of `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) after `codex login` |
 
 ```bash
-kubectl create secret generic claude-subscription --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"
+# `claude setup-token` is interactive: it opens a browser and prints a token
+# starting with sk-ant-oat01-. Copy that token into the Secret.
+kubectl create secret generic claude-subscription --from-literal=CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
 kubectl create secret generic codex-subscription --from-file=auth.json="$HOME/.codex/auth.json"
 kubectl label secret claude-subscription codex-subscription ax.io/agent-credential=true
 ```
