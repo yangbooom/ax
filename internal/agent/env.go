@@ -21,6 +21,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,8 +104,11 @@ func adapterEnv(s Spec, stateDir string) ([]string, error) {
 		if err := os.MkdirAll(stateDir, stateDirPerm); err != nil {
 			return nil, fmt.Errorf("creating CODEX_HOME %s: %w", stateDir, err)
 		}
-		if auth := os.Getenv(EnvCodexAuth); auth != "" {
-			if err := os.WriteFile(filepath.Join(stateDir, codexAuthFile), []byte(auth), credentialPerm); err != nil {
+		if auth := lookup(env, EnvCodexAuth); auth != "" {
+			// Create-only: Codex rewrites auth.json when it refreshes its token,
+			// and a later run in the same container (goal setup, then the task
+			// body) must not put the stale copy from the Secret back.
+			if err := writeIfMissing(filepath.Join(stateDir, codexAuthFile), auth); err != nil {
 				return nil, fmt.Errorf("writing codex auth.json: %w", err)
 			}
 		}
@@ -135,6 +139,23 @@ func adapterEnv(s Spec, stateDir string) ([]string, error) {
 		return nil, fmt.Errorf("unknown agent kind %q", s.Kind)
 	}
 	return env, nil
+}
+
+// writeIfMissing creates path with content and credential permissions, and
+// leaves an existing file alone.
+func writeIfMissing(path, content string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, credentialPerm)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // lookup returns the value of key in env; the last entry wins.

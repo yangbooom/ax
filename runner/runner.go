@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -179,10 +180,20 @@ func Run(ctx context.Context, cfg Config) error {
 // outcome through OnCommandExit: exit code 0 when the turn ended normally, 1
 // otherwise. Without an agent in the environment there is nothing to run; the
 // task logs the problem and only serves metadata.
+//
+// A prompt is not idempotent the way a command can be, so a completed turn is
+// recorded in a marker under workspace.AXDir and not run again when the
+// container restarts, for example on resume. The marker shares the workspace
+// marker's durability (upstream issue #518).
 func runAgent(ctx context.Context, cfg Config, a *v1alpha1.AgentSpec, wsPath, metadataURL string) {
 	kind, model, ok := agent.FromEnv()
 	if !ok {
 		slog.Error("task declares spec.agent but no agent is configured; set an ACP Model for the task", "env", agent.EnvKind)
+		return
+	}
+	marker := filepath.Join(workspace.AXDir, agentMarkerName(cfg.Task))
+	if done, err := os.ReadFile(marker); err == nil {
+		slog.Info("agent turn already completed in this workspace; not re-running the prompt", "marker", marker, "reason", string(done))
 		return
 	}
 	reason, err := agent.Run(ctx, agent.Spec{
@@ -201,10 +212,22 @@ func runAgent(ctx context.Context, cfg Config, a *v1alpha1.AgentSpec, wsPath, me
 		slog.Error("agent task failed", "agent", kind, "error", err)
 	} else {
 		slog.Info("agent task finished", "agent", kind, "reason", reason, "exitCode", exit.ExitCode)
+		if werr := os.WriteFile(marker, []byte(reason), 0o644); werr != nil {
+			slog.Warn("recording agent turn completion", "marker", marker, "error", werr)
+		}
 	}
 	if cfg.OnCommandExit != nil {
 		cfg.OnCommandExit(exit)
 	}
+}
+
+// agentMarkerName is the file under workspace.AXDir that records a finished
+// agent turn for the task.
+func agentMarkerName(task *v1alpha1.Task) string {
+	if name := task.GetMetadata().GetName(); name != "" {
+		return "agent-" + name + ".done"
+	}
+	return "agent.done"
 }
 
 // stopCommand asks the command's process group to terminate, kills it if it has

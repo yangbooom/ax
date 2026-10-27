@@ -16,6 +16,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -51,7 +52,9 @@ func newTestReconciler(t *testing.T) (*controller.TaskReconciler, *mockControlSe
 		lis.Close()
 	})
 	r := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace, "")
+	// Both resolvers are stubbed so no test reaches a real cluster or kubectl.
 	r.SecretResolver = noSecrets
+	r.CredentialResolver = noSecrets
 	r.WorkspaceReadyTimeout = 200 * time.Millisecond
 	return r, mockSrv
 }
@@ -235,5 +238,41 @@ func TestTaskReconciler_CommandTaskGetsAgentEnvWhenSecretPresent(t *testing.T) {
 	env := templateEnv(t, mock)
 	if env["AX_AGENT"] != "claude-code" || env["CLAUDE_CODE_OAUTH_TOKEN"] != "tok" {
 		t.Errorf("agent env missing on command task: %v", env)
+	}
+}
+
+func TestTaskReconciler_AgentModelLookupErrorIsTransient(t *testing.T) {
+	r, _ := newTestReconciler(t)
+	r.ModelResolver = func(context.Context, string, string) (*v1alpha1.Model, error) {
+		return nil, errors.New("redis: connection refused")
+	}
+	task := agentTask("t", "")
+	_, err := r.Reconcile(context.Background(), task, nil)
+	if err == nil {
+		t.Fatal("want Reconcile error on a store failure")
+	}
+	// A store blip must leave the task retryable, not permanently Failed.
+	if task.GetStatus().GetPhase() != "Pending" {
+		t.Errorf("phase = %q, want Pending", task.GetStatus().GetPhase())
+	}
+	for _, c := range task.GetStatus().GetConditions() {
+		if c.Type == "Ready" && c.Reason != "ModelLookupFailed" {
+			t.Errorf("Ready reason = %q, want ModelLookupFailed", c.Reason)
+		}
+	}
+}
+
+func TestTaskReconciler_ProvisionedAgentTaskSurvivesModelLoss(t *testing.T) {
+	// The Model was deleted after the task was created. Its actor already has
+	// the credential baked into its template; suspend/resume must keep working.
+	r, _ := newTestReconciler(t)
+	r.ModelResolver = modelsOf()
+	task := agentTask("t", "")
+	task.Status = &v1alpha1.TaskStatus{Id: "task-t-1", Phase: "Suspended"}
+	if _, err := r.Reconcile(context.Background(), task, nil); err != nil {
+		t.Fatalf("reconcile of an already provisioned task must not fail on a missing Model: %v", err)
+	}
+	if task.GetStatus().GetPhase() == "Failed" {
+		t.Fatal("provisioned task was marked Failed")
 	}
 }

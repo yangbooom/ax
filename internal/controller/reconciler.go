@@ -122,6 +122,10 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, ws 
 	if task.Status == nil {
 		task.Status = &v1alpha1.TaskStatus{}
 	}
+	// A task that has been through Reconcile before has an actor whose template
+	// already carries its environment; later passes must not fail it over
+	// resources that have since changed.
+	provisioned := task.Status.Id != ""
 	atespace := task.Metadata.Atespace
 	if atespace == "" {
 		atespace = "default"
@@ -184,11 +188,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, ws 
 
 	// An ACP Model ships the agent kind and its credential alongside; a task
 	// that asked for an agent and cannot get one fails here, before an actor exists.
-	agentEnv, reason, message := r.agentEnv(ctx, atespace, task)
-	if reason != "" {
-		r.setNotReady(task, reason, message, now)
-		task.Status.Phase = "Failed"
-		return task, fmt.Errorf("%s: %s", reason, message)
+	agentEnv, failure := r.agentEnv(ctx, atespace, task, provisioned)
+	if failure != nil {
+		r.setNotReady(task, failure.reason, failure.message, now)
+		task.Status.Phase = failure.phase
+		return task, fmt.Errorf("%s: %s", failure.reason, failure.message)
 	}
 	for k, v := range agentEnv {
 		extraEnv[k] = v
@@ -458,43 +462,55 @@ func (r *TaskReconciler) lookupGeminiKey(ctx context.Context, atespace string) s
 	return ""
 }
 
+// agentFailure is why a task cannot get the agent it asked for. phase is what
+// the task becomes: Failed for a definite answer, Pending for one worth retrying.
+type agentFailure struct {
+	reason, message, phase string
+}
+
 // agentEnv resolves the task's Model and returns the environment that tells the
-// runner which ACP agent to run and how to authenticate. A task with spec.agent
-// that cannot get a usable agent returns a condition reason and message instead;
-// a plain command task never fails here, it just runs without an agent.
-func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1alpha1.Task) (env map[string]string, reason, message string) {
+// runner which ACP agent to run and how to authenticate.
+//
+// Only a task that asked for an agent and has not been provisioned yet can fail
+// here. A plain command task runs without an agent, and a task that already has
+// an actor keeps the environment baked into that actor's template: Models and
+// Secrets changing later affect new tasks only.
+func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1alpha1.Task, provisioned bool) (map[string]string, *agentFailure) {
 	wantsAgent := task.GetSpec().GetAgent() != nil
 	name := task.GetSpec().GetAgent().GetModel()
 	if name == "" {
 		name = model.DefaultModelResourceName
 	}
-	fail := func(reason, message string) (map[string]string, string, string) {
-		if wantsAgent {
-			return nil, reason, message
+	fail := func(reason, message, phase string) (map[string]string, *agentFailure) {
+		if wantsAgent && !provisioned {
+			return nil, &agentFailure{reason: reason, message: message, phase: phase}
 		}
 		slog.Warn("task runs without an agent", "task", task.GetMetadata().GetName(), "reason", reason, "detail", message)
-		return nil, "", ""
+		return nil, nil
 	}
 
 	if r.ModelResolver == nil {
-		return fail("ModelNotFound", fmt.Sprintf("model %s/%s: no model resolver configured", atespace, name))
+		if !wantsAgent {
+			return nil, nil // A control plane without Models is the upstream case.
+		}
+		return fail("ModelNotFound", fmt.Sprintf("model %s/%s: no model resolver configured", atespace, name), "Failed")
 	}
 	m, err := r.ModelResolver(ctx, atespace, name)
 	if errors.Is(err, store.ErrNotFound) {
 		if !wantsAgent {
-			return nil, "", "" // No default Model is the upstream case; nothing to say.
+			return nil, nil // No default Model is the upstream case; nothing to say.
 		}
-		return nil, "ModelNotFound", fmt.Sprintf("model %s/%s not found", atespace, name)
+		return fail("ModelNotFound", fmt.Sprintf("model %s/%s not found", atespace, name), "Failed")
 	}
 	if err != nil {
-		return fail("ModelNotFound", fmt.Sprintf("loading model %s/%s: %v", atespace, name, err))
+		return fail("ModelLookupFailed", fmt.Sprintf("loading model %s/%s: %v", atespace, name, err), "Pending")
 	}
 	provider := m.GetSpec().GetProvider()
 	if !v1alpha1.IsACPProvider(provider) {
 		if !wantsAgent {
-			return nil, "", "" // A Gemini default Model keeps the Gemini path.
+			return nil, nil // A Gemini default Model keeps the Gemini path.
 		}
-		return nil, "UnsupportedProvider", fmt.Sprintf("model %s/%s has provider %q; spec.agent needs %s or %s", atespace, name, provider, v1alpha1.ProviderClaudeCode, v1alpha1.ProviderCodex)
+		return fail("UnsupportedProvider", fmt.Sprintf("model %s/%s has provider %q; spec.agent needs %s or %s", atespace, name, provider, v1alpha1.ProviderClaudeCode, v1alpha1.ProviderCodex), "Failed")
 	}
 
 	ref := m.GetSpec().GetSecretKey()
@@ -510,10 +526,10 @@ func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1
 		}
 	}
 	if credential == "" {
-		return fail("CredentialNotFound", fmt.Sprintf("model %s/%s: secret %s/%s %s", atespace, name, ref.GetName(), ref.GetKey(), detail))
+		return fail("CredentialNotFound", fmt.Sprintf("model %s/%s: secret %s/%s %s", atespace, name, ref.GetName(), ref.GetKey(), detail), "Failed")
 	}
 
-	env = map[string]string{agent.EnvKind: provider}
+	env := map[string]string{agent.EnvKind: provider}
 	if id := m.GetSpec().GetModel(); id != "" {
 		env[agent.EnvModel] = id
 	}
@@ -523,7 +539,7 @@ func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1
 		env[agent.EnvClaudeToken] = credential
 	}
 	slog.Info("resolved ACP agent for actor template", "atespace", atespace, "model", name, "agent", provider)
-	return env, "", ""
+	return env, nil
 }
 
 // taskTemplateName derives the per-task ActorTemplate name from the task name and a

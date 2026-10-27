@@ -97,8 +97,10 @@ func Run(ctx context.Context, s Spec) (acp.StopReason, error) {
 	}()
 	cl := newClient(s.Cwd, s.Output)
 	conn := acp.NewClientSideConnection(cl, stdin, stdout)
-	defer stop(cmd, stdin, exited)
+	// Deferred calls run last-in-first-out: stop the adapter first, so no
+	// update can arrive while finish writes the final newline.
 	defer cl.finish()
+	defer stop(cmd, stdin, exited)
 
 	// Each request races against the adapter dying, so a crash before an
 	// answer is an error rather than a hang.

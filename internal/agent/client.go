@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -32,6 +33,9 @@ import (
 type client struct {
 	cwd string
 	out io.Writer
+	// mu serializes writes to out: the SDK delivers notifications on its own
+	// goroutine while Run may call finish from another.
+	mu sync.Mutex
 	// midLine is true while the last message chunk written did not end a line,
 	// so the next non-message line can start on a line of its own.
 	midLine bool
@@ -76,6 +80,8 @@ func findOption(opts []acp.PermissionOption, kind acp.PermissionOptionKind) (acp
 // written without added line breaks; tool calls and plans get a line each.
 // Thought chunks are dropped: they are not part of the agent's answer.
 func (c *client) SessionUpdate(_ context.Context, params acp.SessionNotification) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	u := params.Update
 	switch {
 	case u.AgentMessageChunk != nil:
@@ -84,7 +90,7 @@ func (c *client) SessionUpdate(_ context.Context, params acp.SessionNotification
 			c.midLine = !strings.HasSuffix(t.Text, "\n")
 		}
 	case u.ToolCall != nil:
-		c.finish()
+		c.endLine()
 		if u.ToolCall.Status == "" {
 			fmt.Fprintf(c.out, "[tool] %s\n", u.ToolCall.Title)
 		} else {
@@ -92,11 +98,11 @@ func (c *client) SessionUpdate(_ context.Context, params acp.SessionNotification
 		}
 	case u.ToolCallUpdate != nil:
 		if u.ToolCallUpdate.Status != nil {
-			c.finish()
+			c.endLine()
 			fmt.Fprintf(c.out, "[tool] %s %s\n", u.ToolCallUpdate.ToolCallId, *u.ToolCallUpdate.Status)
 		}
 	case u.Plan != nil:
-		c.finish()
+		c.endLine()
 		for _, e := range u.Plan.Entries {
 			fmt.Fprintf(c.out, "[plan] %s %s\n", e.Status, e.Content)
 		}
@@ -104,8 +110,16 @@ func (c *client) SessionUpdate(_ context.Context, params acp.SessionNotification
 	return nil
 }
 
-// finish ends an unterminated message line, if there is one.
+// finish ends an unterminated message line, if there is one. Call it once
+// the adapter can no longer send updates.
 func (c *client) finish() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.endLine()
+}
+
+// endLine is finish for callers that already hold mu.
+func (c *client) endLine() {
 	if c.midLine {
 		fmt.Fprintln(c.out)
 		c.midLine = false

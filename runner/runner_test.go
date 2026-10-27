@@ -327,3 +327,30 @@ func TestRun_AgentTaskWithoutAgentEnvIdles(t *testing.T) {
 	h.cancel()
 	h.waitFinished(t, 5*time.Second)
 }
+
+func TestRun_AgentTaskDoesNotRerunAfterRestart(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv(agent.EnvKind, "claude-code")
+	t.Setenv(agent.EnvCommand, agenttest.Build(t))
+	t.Setenv("FAKEAGENT_MODE", "echo")
+	h.task.Spec.Agent = &v1alpha1.AgentSpec{Prompt: "fix the build"}
+	if exit := h.runUntilCommandExits(t); exit.ExitCode != 0 {
+		t.Fatalf("first run: %+v", exit)
+	}
+	h.cancel()
+	h.waitFinished(t, 5*time.Second)
+
+	// A resume restarts the container with the same state directory. The
+	// prompt already ran to completion; it must not run again.
+	stateDir := workspace.AXDir
+	h2 := newHarness(t)
+	workspace.AXDir, agent.StateDir = stateDir, stateDir
+	h2.task.Spec.Agent = &v1alpha1.AgentSpec{Prompt: "fix the build"}
+	h2.start(t)
+	waitHealthy(t, h2.cfg.Port)
+	select {
+	case e := <-h2.exited:
+		t.Fatalf("prompt ran again after restart: %+v", e)
+	case <-time.After(500 * time.Millisecond):
+	}
+}

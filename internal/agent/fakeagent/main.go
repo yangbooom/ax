@@ -54,6 +54,9 @@ func (f *fake) NewSession(_ context.Context, params acp.NewSessionRequest) (acp.
 	if f.mode == "auth-required" {
 		return acp.NewSessionResponse{}, acp.NewAuthRequired(nil)
 	}
+	if f.mode == "hang-session" {
+		select {} // never answer session/new; the client must give up on its own
+	}
 	if err := os.Chdir(params.Cwd); err != nil {
 		return acp.NewSessionResponse{}, acp.NewInternalError(err.Error())
 	}

@@ -59,8 +59,9 @@ func TestFromEnv(t *testing.T) {
 
 func TestAdapterEnv_Codex(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv(EnvCodexAuth, `{"tokens":{}}`)
-	env, err := adapterEnv(Spec{Kind: KindCodex, Model: "m"}, home)
+	// The credential arrives in Spec.Env, the adapter's base environment, not
+	// necessarily in the runner's own process environment.
+	env, err := adapterEnv(Spec{Kind: KindCodex, Model: "m", Env: []string{EnvCodexAuth + `={"tokens":{}}`}}, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +77,22 @@ func TestAdapterEnv_Codex(t *testing.T) {
 	}
 	if fi, _ := os.Stat(filepath.Join(home, "auth.json")); fi.Mode().Perm() != 0o600 {
 		t.Errorf("auth.json mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestAdapterEnv_Codex_KeepsRefreshedAuth(t *testing.T) {
+	// Codex rewrites auth.json when it refreshes its token. A second run in the
+	// same container (goal setup, then the task body) must not put the stale
+	// copy from the Secret back, or the refresh token gets reused.
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"refreshed":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapterEnv(Spec{Kind: KindCodex, Env: []string{EnvCodexAuth + `={"stale":true}`}}, home); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(home, "auth.json")); got != `{"refreshed":true}` {
+		t.Fatalf("auth.json was overwritten: %s", got)
 	}
 }
 
@@ -203,8 +220,32 @@ func TestRun_AdapterExitsBeforeInitialize(t *testing.T) {
 	s := fakeSpec(t, "die")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := Run(ctx, s); err == nil {
-		t.Fatal("want error when adapter dies before initialize")
+	start := time.Now()
+	_, err := Run(ctx, s)
+	// A dead adapter must be reported as such, promptly: a context timeout
+	// here would mean Run hung until the deadline.
+	if err == nil || !strings.Contains(err.Error(), "exited before answering initialize") {
+		t.Fatalf("want 'exited before answering initialize', got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Run took %v to notice the dead adapter", elapsed)
+	}
+}
+
+func TestRun_CancelDuringSessionNewReturns(t *testing.T) {
+	s := fakeSpec(t, "hang-session")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := Run(ctx, s); done <- err }()
+	time.Sleep(300 * time.Millisecond) // let initialize complete and session/new hang
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error after cancel during session/new")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return after cancel during session/new")
 	}
 }
 
