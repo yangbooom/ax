@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/ax/internal/agent"
+	"github.com/google/ax/internal/agent/agenttest"
 	"github.com/google/ax/internal/workspace"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"github.com/google/ax/runner"
@@ -163,9 +165,10 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dir := t.TempDir()
 
-	origAXDir := workspace.AXDir
+	origAXDir, origStateDir := workspace.AXDir, agent.StateDir
 	workspace.AXDir = filepath.Join(dir, "ax")
-	t.Cleanup(func() { workspace.AXDir = origAXDir })
+	agent.StateDir = workspace.AXDir
+	t.Cleanup(func() { workspace.AXDir, agent.StateDir = origAXDir, origStateDir })
 
 	h := &harness{
 		wsPath:   filepath.Join(dir, "workspace"),
@@ -293,4 +296,34 @@ func TestRun_SetsUpBoundWorkspace(t *testing.T) {
 	if !strings.Contains(string(body), "name: code") {
 		t.Errorf("workspace endpoint should serve the bound workspace:\n%s", body)
 	}
+}
+
+func TestRun_AgentTaskRunsPromptInWorkspace(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv(agent.EnvKind, "claude-code")
+	t.Setenv(agent.EnvCommand, agenttest.Build(t))
+	t.Setenv("FAKEAGENT_MODE", "echo")
+	h.task.Spec.Agent = &v1alpha1.AgentSpec{Prompt: "fix the build"}
+
+	exit := h.runUntilCommandExits(t)
+	if exit.Err != nil || exit.ExitCode != 0 {
+		t.Fatalf("unexpected exit: %+v", exit)
+	}
+	// Runner stays up after the turn, like after a command.
+	waitHealthy(t, h.cfg.Port)
+}
+
+func TestRun_AgentTaskWithoutAgentEnvIdles(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv(agent.EnvKind, "")
+	h.task.Spec.Agent = &v1alpha1.AgentSpec{Prompt: "p"}
+	h.start(t)
+	waitHealthy(t, h.cfg.Port)
+	select {
+	case e := <-h.exited:
+		t.Fatalf("no agent configured, yet exit reported: %+v", e)
+	case <-time.After(300 * time.Millisecond):
+	}
+	h.cancel()
+	h.waitFinished(t, 5*time.Second)
 }
