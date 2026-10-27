@@ -18,6 +18,8 @@ The control plane does not run `spec.command` as the container entrypoint. It al
 | `AX_WORKSPACE_YAML` | The bound `Workspace` resource as YAML; unset when the task binds none |
 | `spec.env` entries | Each one set directly in the container environment |
 | `GEMINI_API_KEY` | Set when the atespace has a Gemini credential configured |
+| `AX_AGENT`, `AX_AGENT_MODEL` | Set when the task's Model (`spec.agent.model`, or `default-model`) has provider `claude-code` or `codex`: the agent kind and its optional vendor model id |
+| `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_AUTH_JSON` | The matching subscription credential from that Model's Secret |
 | Volume | A durable directory mounted at `/workspace` |
 | Readiness probe | `GET /readyz` on port 80 |
 
@@ -43,7 +45,7 @@ The `/workspace` volume is what survives suspend and resume. Agent Substrate sna
 
 **Prepare the workspace once.** A task binds at most one workspace through `spec.workspace`. At the binding's path, `/workspace` unless it sets one, clone the Git repos from `spec.git`, create the skills path, write any MCP configuration, and run any environment bootstrap the binding asks for through its `goal`. A task with no binding gets an empty `/workspace`. Record that setup happened somewhere on the durable volume or in a known location, then skip the work on later boots. Resume restarts the container, and re-cloning into a restored workspace would destroy the agent's state. The default runner writes a marker file under `/ax`.
 
-**Run the command and supervise it.** Start `spec.command` as a child process with the workspace path as its working directory. Give it `AX_METADATA_URL` pointing at your loopback metadata server plus every `spec.env` entry. Put it in its own process group so you can signal everything it spawns.
+**Run the command and supervise it.** Start `spec.command` as a child process with the workspace path as its working directory. Give it `AX_METADATA_URL` pointing at your loopback metadata server plus every `spec.env` entry. Put it in its own process group so you can signal everything it spawns. When the task has `spec.agent` instead of a command, run the agent named by `AX_AGENT` through its ACP adapter: one session with the workspace as `cwd`, one `session/prompt` carrying `spec.agent.prompt`, permission requests approved, file access confined to the workspace. The default runner's `internal/agent` package does this; a custom runner may drive the adapters however it likes, but it must not exit when the turn ends.
 
 **Stay up after the command exits.** The runner is PID 1, and the container lives as long as it does. If the runner exits when the command does, the metadata server goes with it and `ax ssh` stops working. Log the exit status and keep serving until you are told to stop. The control plane does not currently read the command's exit status back from the container.
 
@@ -53,7 +55,7 @@ The `/workspace` volume is what survives suspend and resume. Agent Substrate sna
 
 ## The default runner
 
-`ax-task-runner` lives in `cmd/ax-task-runner` and is a thin wrapper over the `runner` Go package. It implements everything above and is documented from the inside in [Sandbox](sandbox.md). Its image, built from `Dockerfile.task-runner`, is Python 3.12 with `git`, `curl`, `openssh-client`, and the Antigravity agent installed, because the goal-based workspace bootstrap hands the goal to Antigravity.
+`ax-task-runner` lives in `cmd/ax-task-runner` and is a thin wrapper over the `runner` Go package. It implements everything above and is documented from the inside in [Sandbox](sandbox.md). Its image, built from `Dockerfile.task-runner`, is Python 3.12 with `git`, `curl`, `openssh-client`, and the Antigravity agent installed, because the goal-based workspace bootstrap hands the goal to Antigravity when no ACP agent is configured. It also carries Node 22 and the two ACP adapters, `claude-agent-acp` and `codex-acp`, which the runner starts for `spec.agent` tasks and for goals when `AX_AGENT` is set.
 
 ```bash
 make build-task-runner     # cross-compile for linux/amd64 and build the image

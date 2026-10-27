@@ -51,6 +51,7 @@ Agents are a new kind of workload. They are neither stateless microservices nor 
 | Run untrusted agent code in an isolated sandbox with CPU/memory limits | **`Task`** |
 | Pre-wire Git repos, MCP servers, and skill packages so every agent starts warm | **`Workspace`** |
 | Configure which LLM the platform itself uses, with credentials from a Kubernetes secret | **`Model`** |
+| Run Claude Code or Codex on your own subscription against a prompt | **`Task.spec.agent`** + a `Model` with provider `claude-code` or `codex` |
 | Pause an idle agent and pick up exactly where it left off | `ax suspend` / `ax resume` |
 | Shell into a running agent to see what it is doing | `ax ssh` |
 
