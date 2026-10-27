@@ -80,6 +80,9 @@ message TaskSpec {
   // debug enables the in-container guest services (process execution and file
   // access) that back `ax ssh`. Off by default.
   bool debug = 6;
+  // agent runs an ACP agent (Claude Code or Codex) with a prompt as the task
+  // body instead of spec.command. Exactly one of command and agent may be set.
+  AgentSpec agent = 7;
 }
 
 message EnvVar {
@@ -102,6 +105,15 @@ message WorkspaceRef {
   string path = 2;
   // TODO(jbd): Consider removing goal.
   string goal = 3;
+}
+
+message AgentSpec {
+  // model names the Model resource in the task's atespace whose provider runs
+  // this task. Empty means "default-model".
+  string model = 1;
+  // prompt is the single user turn sent to the agent, run with the workspace
+  // path as its working directory.
+  string prompt = 2;
 }
 
 message TaskStatus {

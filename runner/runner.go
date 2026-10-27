@@ -28,9 +28,12 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/coder/acp-go-sdk"
+	"github.com/google/ax/internal/agent"
 	"github.com/google/ax/internal/metadata"
 	"github.com/google/ax/internal/workspace"
 	"github.com/google/ax/pkg/apis/v1alpha1"
@@ -130,6 +133,13 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Info("workspace maiden run setup marked ready", "path", wsPath)
 	}
 
+	if a := cfg.Task.GetSpec().GetAgent(); a != nil {
+		runAgent(ctx, cfg, a, wsPath, metadataURL)
+		// Keep the sandbox up and inspectable until told to stop.
+		<-ctx.Done()
+		return nil
+	}
+
 	cmdArgs := cfg.Task.GetSpec().GetCommand()
 	if len(cmdArgs) == 0 {
 		slog.Info("no task command specified; serving metadata until stopped")
@@ -164,6 +174,60 @@ func Run(ctx context.Context, cfg Config) error {
 		reportExit(cfg, cmd, stopCommand(cmd, exited))
 	}
 	return nil
+}
+
+// runAgent runs the task's agent prompt in the workspace and reports the
+// outcome through OnCommandExit: exit code 0 when the turn ended normally, 1
+// otherwise. Without an agent in the environment there is nothing to run; the
+// task logs the problem and only serves metadata.
+//
+// A prompt is not idempotent the way a command can be, so a completed turn is
+// recorded in a marker under workspace.AXDir and not run again when the
+// container restarts, for example on resume. The marker shares the workspace
+// marker's durability (upstream issue #518).
+func runAgent(ctx context.Context, cfg Config, a *v1alpha1.AgentSpec, wsPath, metadataURL string) {
+	kind, model, ok := agent.FromEnv()
+	if !ok {
+		slog.Error("task declares spec.agent but no agent is configured; set an ACP Model for the task", "env", agent.EnvKind)
+		return
+	}
+	marker := filepath.Join(workspace.AXDir, agentMarkerName(cfg.Task))
+	if done, err := os.ReadFile(marker); err == nil {
+		slog.Info("agent turn already completed in this workspace; not re-running the prompt", "marker", marker, "reason", string(done))
+		return
+	}
+	reason, err := agent.Run(ctx, agent.Spec{
+		Kind:   kind,
+		Model:  model,
+		Cwd:    wsPath,
+		Prompt: a.GetPrompt(),
+		Env:    commandEnv(cfg.Task, metadataURL),
+		Output: os.Stdout,
+	})
+	exit := CommandExit{ExitCode: 1, Err: err}
+	if err == nil && reason == acp.StopReasonEndTurn {
+		exit.ExitCode = 0
+	}
+	if err != nil {
+		slog.Error("agent task failed", "agent", kind, "error", err)
+	} else {
+		slog.Info("agent task finished", "agent", kind, "reason", reason, "exitCode", exit.ExitCode)
+		if werr := os.WriteFile(marker, []byte(reason), 0o644); werr != nil {
+			slog.Warn("recording agent turn completion", "marker", marker, "error", werr)
+		}
+	}
+	if cfg.OnCommandExit != nil {
+		cfg.OnCommandExit(exit)
+	}
+}
+
+// agentMarkerName is the file under workspace.AXDir that records a finished
+// agent turn for the task.
+func agentMarkerName(task *v1alpha1.Task) string {
+	if name := task.GetMetadata().GetName(); name != "" {
+		return "agent-" + name + ".done"
+	}
+	return "agent.done"
 }
 
 // stopCommand asks the command's process group to terminate, kills it if it has

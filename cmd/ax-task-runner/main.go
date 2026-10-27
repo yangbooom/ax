@@ -30,6 +30,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/ax/internal/agent"
+	"github.com/google/ax/internal/workspace"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"github.com/google/ax/runner"
 	"google.golang.org/protobuf/proto"
@@ -41,12 +43,15 @@ func main() {
 		cfg      runner.Config
 		taskFile string
 		wsFile   string
+		stateDir string
 	)
 	flag.IntVar(&cfg.Port, "port", runner.DefaultPort, "Port for the probe and guest server")
 	flag.IntVar(&cfg.MetadataPort, "metadata-port", runner.DefaultMetadataPort, "Loopback-only port for the metadata endpoints")
 	flag.StringVar(&taskFile, "task-file", "", "Read the Task YAML from this file instead of AX_TASK_YAML")
 	flag.StringVar(&wsFile, "workspace-file", "", "Read the Workspace YAML from this file instead of AX_WORKSPACE_YAML")
+	flag.StringVar(&stateDir, "state-dir", "", "Directory for runner state (markers, agent homes) instead of /ax; for local runs")
 	flag.Parse()
+	applyStateDir(stateDir)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -102,6 +107,16 @@ func loadSpec(file, envVar string, out proto.Message) error {
 		return fmt.Errorf("parsing %T: %w", out, err)
 	}
 	return nil
+}
+
+// applyStateDir points every piece of runner state at dir. Empty keeps the
+// in-container default, /ax.
+func applyStateDir(dir string) {
+	if dir == "" {
+		return
+	}
+	workspace.AXDir = dir
+	agent.StateDir = dir
 }
 
 func fatal(err error) {

@@ -23,6 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     && rm -rf /var/lib/apt/lists/*
 
+# Node 22 and the ACP adapters that let a task run Claude Code or Codex on a
+# subscription (see docs/manifests.md, "Claude Code and Codex").
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g --no-fund --no-audit \
+        @agentclientprotocol/claude-agent-acp@0.97.0 \
+        @agentclientprotocol/codex-acp@2.3.0 \
+    && npm cache clean --force
+
 RUN pip install --no-cache-dir google-antigravity
 
 ARG TARGETARCH=amd64

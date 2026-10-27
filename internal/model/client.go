@@ -297,11 +297,83 @@ func (c *Client) resolveAPIKey() string {
 	return ""
 }
 
+// AgentCredentialLabel marks a Secret that a Model may hand to task containers
+// as an agent credential. The control plane copies a Secret's value into a
+// task's environment only when the Secret carries this label set to "true", so
+// a Model cannot be used to read arbitrary Secrets in the atespace.
+const AgentCredentialLabel = "ax.io/agent-credential"
+
+// secretObject is the part of a Kubernetes Secret AX reads.
+type secretObject struct {
+	Metadata struct {
+		Labels map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Data map[string]string `json:"data"`
+}
+
+// value returns the decoded, trimmed value stored under key.
+func (s *secretObject) value(key string) (string, bool) {
+	encoded, ok := s.Data[key]
+	if !ok {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(decoded)), true
+}
+
 // GetKubernetesSecret retrieves a secret from the Kubernetes API or kubectl CLI.
 func GetKubernetesSecret(ctx context.Context, namespace, secretName, key string) (string, error) {
 	if secretName == "" || key == "" {
 		return "", fmt.Errorf("secret name and key must not be empty")
 	}
+	obj, err := fetchSecret(ctx, namespace, secretName)
+	if err != nil {
+		return "", fmt.Errorf("kubernetes secret %s/%s with key %s not found", namespace, secretName, key)
+	}
+	v, ok := obj.value(key)
+	if !ok {
+		return "", fmt.Errorf("kubernetes secret %s/%s with key %s not found", namespace, secretName, key)
+	}
+	return v, nil
+}
+
+// GetAgentCredential is GetKubernetesSecret restricted to Secrets labeled
+// AgentCredentialLabel=true. Use it for anything a user-written resource (a
+// Model) names and the control plane then copies into a workload.
+func GetAgentCredential(ctx context.Context, namespace, secretName, key string) (string, error) {
+	// The name is interpolated into an API path and a kubectl argv. Holding it
+	// to the same RFC 1123 label rule as every other ax name keeps it a single
+	// path segment, so a Model cannot point at a Secret outside its atespace.
+	if err := v1alpha1.ValidateName(secretName); err != nil {
+		return "", fmt.Errorf("secret name %q: %w", secretName, err)
+	}
+	if key == "" {
+		return "", fmt.Errorf("secret key must not be empty")
+	}
+	obj, err := fetchSecret(ctx, namespace, secretName)
+	if err != nil {
+		return "", fmt.Errorf("kubernetes secret %s/%s not found", namespace, secretName)
+	}
+	return agentCredentialFrom(obj, key)
+}
+
+func agentCredentialFrom(obj *secretObject, key string) (string, error) {
+	if obj.Metadata.Labels[AgentCredentialLabel] != "true" {
+		return "", fmt.Errorf("secret is not labeled %s=true; label it to allow Models to use it as an agent credential", AgentCredentialLabel)
+	}
+	v, ok := obj.value(key)
+	if !ok {
+		return "", fmt.Errorf("secret has no key %s", key)
+	}
+	return v, nil
+}
+
+// fetchSecret reads a Secret through the in-cluster API when running in a pod,
+// falling back to kubectl for local development.
+func fetchSecret(ctx context.Context, namespace, secretName string) (*secretObject, error) {
 	if namespace == "" {
 		namespace = DefaultAtespace
 	}
@@ -351,16 +423,9 @@ func GetKubernetesSecret(ctx context.Context, namespace, secretName, key string)
 				if err == nil {
 					defer resp.Body.Close()
 					if resp.StatusCode == http.StatusOK {
-						var secretObj struct {
-							Data map[string]string `json:"data"`
-						}
-						if err := json.NewDecoder(resp.Body).Decode(&secretObj); err == nil {
-							if encoded, ok := secretObj.Data[key]; ok {
-								decoded, err := base64.StdEncoding.DecodeString(encoded)
-								if err == nil {
-									return strings.TrimSpace(string(decoded)), nil
-								}
-							}
+						var obj secretObject
+						if err := json.NewDecoder(resp.Body).Decode(&obj); err == nil {
+							return &obj, nil
 						}
 					}
 				}
@@ -369,20 +434,16 @@ func GetKubernetesSecret(ctx context.Context, namespace, secretName, key string)
 	}
 
 	// 2. Fallback to kubectl CLI (for local development outside cluster)
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", namespace,
-		"-o", fmt.Sprintf("jsonpath={.data.%s}", key))
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", namespace, "-o", "json")
 	out, err := cmd.Output()
 	if err == nil {
-		raw := strings.TrimSpace(string(out))
-		if raw != "" {
-			decoded, err := base64.StdEncoding.DecodeString(raw)
-			if err == nil {
-				return strings.TrimSpace(string(decoded)), nil
-			}
+		var obj secretObject
+		if err := json.Unmarshal(out, &obj); err == nil {
+			return &obj, nil
 		}
 	}
 
-	return "", fmt.Errorf("kubernetes secret %s/%s with key %s not found", namespace, secretName, key)
+	return nil, fmt.Errorf("kubernetes secret %s/%s not found", namespace, secretName)
 }
 
 // NewClientFromSpec creates a new model client from a v1alpha1.ModelSpec.

@@ -710,6 +710,14 @@ func runDescribe(serverURL, atespace string, args []string) error {
 		if len(task.Spec.Command) > 0 {
 			fmt.Printf("Command:      %v\n", task.Spec.Command)
 		}
+		if a := task.Spec.GetAgent(); a != nil {
+			model := a.GetModel()
+			if model == "" {
+				model = "default-model"
+			}
+			fmt.Printf("Agent:        model=%s\n", model)
+			fmt.Printf("Prompt:       %q\n", a.GetPrompt())
+		}
 	}
 
 	if len(conditions) > 0 {
