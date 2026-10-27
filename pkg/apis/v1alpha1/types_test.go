@@ -613,3 +613,31 @@ func TestTaskYAML_AgentRoundTrip(t *testing.T) {
 		t.Fatalf("marshal lost agent: %s", out)
 	}
 }
+
+func TestValidateTask_AgentAndCommandExclusive(t *testing.T) {
+	task := &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: "t"}, Spec: &v1alpha1.TaskSpec{
+		Command: []string{"sh"}, Agent: &v1alpha1.AgentSpec{Prompt: "p"},
+	}}
+	if err := v1alpha1.ValidateTask(task); err == nil || !strings.Contains(err.Error(), "spec.agent") {
+		t.Fatalf("want spec.agent/command error, got %v", err)
+	}
+}
+
+func TestValidateTask_AgentNeedsPrompt(t *testing.T) {
+	task := &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: "t"}, Spec: &v1alpha1.TaskSpec{Agent: &v1alpha1.AgentSpec{}}}
+	if err := v1alpha1.ValidateTask(task); err == nil || !strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("want prompt error, got %v", err)
+	}
+	task.Spec.Agent.Prompt = "p"
+	if err := v1alpha1.ValidateTask(task); err != nil {
+		t.Fatalf("valid agent task rejected: %v", err)
+	}
+}
+
+func TestIsACPProvider(t *testing.T) {
+	for p, want := range map[string]bool{"claude-code": true, "codex": true, "google": false, "": false, "Codex": false} {
+		if got := v1alpha1.IsACPProvider(p); got != want {
+			t.Errorf("IsACPProvider(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

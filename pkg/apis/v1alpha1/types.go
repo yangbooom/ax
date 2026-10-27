@@ -41,7 +41,18 @@ const (
 	// PhaseTerminating marks a task whose deletion has been requested and whose
 	// actor is being torn down. The record disappears once cleanup completes.
 	PhaseTerminating = "Terminating"
+
+	// Model providers. ProviderGoogle calls the Gemini API directly; the other
+	// two are coding agents AX drives over the Agent Client Protocol.
+	ProviderGoogle     = "google"
+	ProviderClaudeCode = "claude-code"
+	ProviderCodex      = "codex"
 )
+
+// IsACPProvider reports whether provider names an agent AX drives over ACP.
+func IsACPProvider(provider string) bool {
+	return provider == ProviderClaudeCode || provider == ProviderCodex
+}
 
 // YAML encoding.
 //
@@ -317,6 +328,14 @@ func ValidateTask(t *Task) error {
 		}
 		if p := ref.GetPath(); p != "" && !strings.HasPrefix(p, "/") {
 			return fmt.Errorf("spec.workspace: path %q must be absolute", p)
+		}
+	}
+	if a := spec.GetAgent(); a != nil {
+		if len(spec.GetCommand()) > 0 {
+			return errors.New("spec.agent and spec.command are mutually exclusive")
+		}
+		if a.GetPrompt() == "" {
+			return errors.New("spec.agent: prompt is required")
 		}
 	}
 	return ValidateResources(spec.GetResources())
