@@ -344,8 +344,14 @@ func GetKubernetesSecret(ctx context.Context, namespace, secretName, key string)
 // AgentCredentialLabel=true. Use it for anything a user-written resource (a
 // Model) names and the control plane then copies into a workload.
 func GetAgentCredential(ctx context.Context, namespace, secretName, key string) (string, error) {
-	if secretName == "" || key == "" {
-		return "", fmt.Errorf("secret name and key must not be empty")
+	// The name is interpolated into an API path and a kubectl argv. Holding it
+	// to the same RFC 1123 label rule as every other ax name keeps it a single
+	// path segment, so a Model cannot point at a Secret outside its atespace.
+	if err := v1alpha1.ValidateName(secretName); err != nil {
+		return "", fmt.Errorf("secret name %q: %w", secretName, err)
+	}
+	if key == "" {
+		return "", fmt.Errorf("secret key must not be empty")
 	}
 	obj, err := fetchSecret(ctx, namespace, secretName)
 	if err != nil {

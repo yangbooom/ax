@@ -15,6 +15,7 @@
 package model
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -42,5 +43,18 @@ func TestAgentCredentialFrom_RequiresLabel(t *testing.T) {
 	wrongValue.Metadata.Labels = map[string]string{AgentCredentialLabel: "yes"}
 	if _, err := agentCredentialFrom(wrongValue, "CLAUDE_CODE_OAUTH_TOKEN"); err == nil {
 		t.Fatal("label value other than \"true\" must be refused")
+	}
+}
+
+// The secret name is interpolated into an API path and a kubectl argv, so a
+// Model must not be able to point it outside its atespace.
+func TestGetAgentCredential_RejectsInvalidName(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("PATH", t.TempDir()) // no kubectl: the name must be refused before any lookup
+	for _, name := range []string{"../other-ns/secrets/x", "a/b", ""} {
+		_, err := GetAgentCredential(context.Background(), "ns", name, "k")
+		if err == nil || !strings.Contains(err.Error(), "secret name") {
+			t.Errorf("name %q: want it refused by name validation, got %v", name, err)
+		}
 	}
 }
