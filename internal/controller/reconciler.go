@@ -28,7 +28,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/ax/internal/agent"
 	"github.com/google/ax/internal/model"
+	"github.com/google/ax/internal/store"
 	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"google.golang.org/grpc/codes"
@@ -56,6 +58,10 @@ const (
 // SecretResolver looks up a key from a Kubernetes secret in the given namespace.
 type SecretResolver func(ctx context.Context, namespace, secretName, key string) (string, error)
 
+// ModelResolver loads a Model by atespace and name. It returns store.ErrNotFound
+// when there is no such Model.
+type ModelResolver func(ctx context.Context, atespace, name string) (*v1alpha1.Model, error)
+
 // TaskReconciler reconciles Task resources by provisioning and orchestrating
 // sandboxed Actors on Agent Substrate.
 type TaskReconciler struct {
@@ -69,6 +75,9 @@ type TaskReconciler struct {
 	// SecretResolver resolves the Gemini API key for task containers. It defaults
 	// to the Kubernetes secret lookup; tests replace it to avoid touching a cluster.
 	SecretResolver SecretResolver
+	// ModelResolver loads the Model that decides which ACP agent, if any, a task
+	// runs on. Nil means no Models exist, which leaves tasks on the Gemini path.
+	ModelResolver ModelResolver
 
 	// WorkspaceReadyTimeout bounds how long Reconcile waits for the actor's workspace
 	// to report ready before recording it as still initializing.
@@ -165,6 +174,18 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, ws 
 
 	if geminiKey := r.lookupGeminiKey(ctx, atespace); geminiKey != "" {
 		extraEnv[geminiSecretKey] = geminiKey
+	}
+
+	// An ACP Model ships the agent kind and its credential alongside; a task
+	// that asked for an agent and cannot get one fails here, before an actor exists.
+	agentEnv, reason, message := r.agentEnv(ctx, atespace, task)
+	if reason != "" {
+		r.setNotReady(task, reason, message, now)
+		task.Status.Phase = "Failed"
+		return task, fmt.Errorf("%s: %s", reason, message)
+	}
+	for k, v := range agentEnv {
+		extraEnv[k] = v
 	}
 
 	// Only launch configuration belongs in the template; status changes
@@ -429,6 +450,73 @@ func (r *TaskReconciler) lookupGeminiKey(ctx context.Context, atespace string) s
 		return key
 	}
 	return ""
+}
+
+// agentEnv resolves the task's Model and returns the environment that tells the
+// runner which ACP agent to run and how to authenticate. A task with spec.agent
+// that cannot get a usable agent returns a condition reason and message instead;
+// a plain command task never fails here, it just runs without an agent.
+func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1alpha1.Task) (env map[string]string, reason, message string) {
+	wantsAgent := task.GetSpec().GetAgent() != nil
+	name := task.GetSpec().GetAgent().GetModel()
+	if name == "" {
+		name = model.DefaultModelResourceName
+	}
+	fail := func(reason, message string) (map[string]string, string, string) {
+		if wantsAgent {
+			return nil, reason, message
+		}
+		slog.Warn("task runs without an agent", "task", task.GetMetadata().GetName(), "reason", reason, "detail", message)
+		return nil, "", ""
+	}
+
+	if r.ModelResolver == nil {
+		return fail("ModelNotFound", fmt.Sprintf("model %s/%s: no model resolver configured", atespace, name))
+	}
+	m, err := r.ModelResolver(ctx, atespace, name)
+	if errors.Is(err, store.ErrNotFound) {
+		if !wantsAgent {
+			return nil, "", "" // No default Model is the upstream case; nothing to say.
+		}
+		return nil, "ModelNotFound", fmt.Sprintf("model %s/%s not found", atespace, name)
+	}
+	if err != nil {
+		return fail("ModelNotFound", fmt.Sprintf("loading model %s/%s: %v", atespace, name, err))
+	}
+	provider := m.GetSpec().GetProvider()
+	if !v1alpha1.IsACPProvider(provider) {
+		if !wantsAgent {
+			return nil, "", "" // A Gemini default Model keeps the Gemini path.
+		}
+		return nil, "UnsupportedProvider", fmt.Sprintf("model %s/%s has provider %q; spec.agent needs %s or %s", atespace, name, provider, v1alpha1.ProviderClaudeCode, v1alpha1.ProviderCodex)
+	}
+
+	ref := m.GetSpec().GetSecretKey()
+	credential := ""
+	if r.SecretResolver != nil && ref.GetName() != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx, secretLookupTimeout)
+		defer cancel()
+		if v, err := r.SecretResolver(lookupCtx, atespace, ref.GetName(), ref.GetKey()); err == nil {
+			credential = v
+		} else {
+			slog.Warn("resolving agent credential", "atespace", atespace, "secret", ref.GetName(), "key", ref.GetKey(), "error", err)
+		}
+	}
+	if credential == "" {
+		return fail("CredentialNotFound", fmt.Sprintf("model %s/%s: secret %s/%s has no value", atespace, name, ref.GetName(), ref.GetKey()))
+	}
+
+	env = map[string]string{agent.EnvKind: provider}
+	if id := m.GetSpec().GetModel(); id != "" {
+		env[agent.EnvModel] = id
+	}
+	if provider == v1alpha1.ProviderCodex {
+		env[agent.EnvCodexAuth] = credential
+	} else {
+		env[agent.EnvClaudeToken] = credential
+	}
+	slog.Info("resolved ACP agent for actor template", "atespace", atespace, "model", name, "agent", provider)
+	return env, "", ""
 }
 
 // taskTemplateName derives the per-task ActorTemplate name from the task name and a

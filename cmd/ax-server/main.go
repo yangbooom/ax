@@ -109,7 +109,10 @@ func main() {
 		slog.Warn("could not initialize substrate client; running without substrate reconciliation", "error", err)
 	} else {
 		defer subClient.Close()
-		reconciler = controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage)
+		tr := controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage)
+		// Models decide which ACP agent (if any) a task runs on.
+		tr.ModelResolver = rStore.GetModel
+		reconciler = tr
 	}
 
 	srv := server.NewServer(rStore, server.Options{
