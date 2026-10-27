@@ -78,6 +78,11 @@ type TaskReconciler struct {
 	// ModelResolver loads the Model that decides which ACP agent, if any, a task
 	// runs on. Nil means no Models exist, which leaves tasks on the Gemini path.
 	ModelResolver ModelResolver
+	// CredentialResolver reads the Secret a Model names as its agent credential.
+	// It defaults to model.GetAgentCredential, which only returns Secrets
+	// labeled model.AgentCredentialLabel=true, so a Model cannot copy an
+	// arbitrary Secret into a task container.
+	CredentialResolver SecretResolver
 
 	// WorkspaceReadyTimeout bounds how long Reconcile waits for the actor's workspace
 	// to report ready before recording it as still initializing.
@@ -104,6 +109,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		defaultTemplateAtespace: defaultTemplateAtespace,
 		defaultTaskImage:        defaultTaskImage,
 		SecretResolver:          model.GetKubernetesSecret,
+		CredentialResolver:      model.GetAgentCredential,
 		WorkspaceReadyTimeout:   defaultWorkspaceReadyTimeout,
 	}
 }
@@ -493,17 +499,18 @@ func (r *TaskReconciler) agentEnv(ctx context.Context, atespace string, task *v1
 
 	ref := m.GetSpec().GetSecretKey()
 	credential := ""
-	if r.SecretResolver != nil && ref.GetName() != "" {
+	detail := "has no value"
+	if r.CredentialResolver != nil && ref.GetName() != "" {
 		lookupCtx, cancel := context.WithTimeout(ctx, secretLookupTimeout)
 		defer cancel()
-		if v, err := r.SecretResolver(lookupCtx, atespace, ref.GetName(), ref.GetKey()); err == nil {
+		if v, err := r.CredentialResolver(lookupCtx, atespace, ref.GetName(), ref.GetKey()); err == nil {
 			credential = v
 		} else {
-			slog.Warn("resolving agent credential", "atespace", atespace, "secret", ref.GetName(), "key", ref.GetKey(), "error", err)
+			detail = err.Error()
 		}
 	}
 	if credential == "" {
-		return fail("CredentialNotFound", fmt.Sprintf("model %s/%s: secret %s/%s has no value", atespace, name, ref.GetName(), ref.GetKey()))
+		return fail("CredentialNotFound", fmt.Sprintf("model %s/%s: secret %s/%s %s", atespace, name, ref.GetName(), ref.GetKey(), detail))
 	}
 
 	env = map[string]string{agent.EnvKind: provider}

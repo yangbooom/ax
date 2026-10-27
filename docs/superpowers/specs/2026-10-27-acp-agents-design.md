@@ -291,6 +291,13 @@ extra handling. Add a `make proto` target for regeneration while there.
 - **Credentials in the ActorTemplate.** Same posture as `GEMINI_API_KEY`
   upstream: the value is in the template spec and in the container
   environment. Not worse than today, not better.
+- **A Model names the Secret.** Unlike the fixed `gemini-api-secret` name
+  upstream, `Model.spec.secretKey` can point at any Secret in the atespace,
+  and the control plane would copy it into a task. To keep a Model from
+  becoming a Secret reader, only Secrets labeled `ax.io/agent-credential=true`
+  are eligible (`model.GetAgentCredential`); anything else is
+  `CredentialNotFound`. Added during implementation after a security review
+  of the first controller commit.
 - **Adapter churn.** Both adapters publish several times a week and the ACP
   spec is at v1/v2 transition. Versions are pinned in the Dockerfile; the Go
   SDK is pinned in `go.mod`. `acp-go-sdk` v0.13.5 speaks protocol v1, and

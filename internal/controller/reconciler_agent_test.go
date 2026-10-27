@@ -148,7 +148,7 @@ func assertFailed(t *testing.T, task *v1alpha1.Task, err error, reason string) {
 func TestTaskReconciler_AgentInjectsCredential(t *testing.T) {
 	r, mock := newTestReconciler(t)
 	r.ModelResolver = modelsOf(claudeModel("default-model"))
-	r.SecretResolver = secretsOf(map[string]string{"claude-subscription/CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"})
+	r.CredentialResolver = secretsOf(map[string]string{"claude-subscription/CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"})
 	task := agentTask("t", "")
 	if _, err := r.Reconcile(context.Background(), task, nil); err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestTaskReconciler_AgentInjectsCredential(t *testing.T) {
 func TestTaskReconciler_AgentCodexUsesAuthJSON(t *testing.T) {
 	r, mock := newTestReconciler(t)
 	r.ModelResolver = modelsOf(codexModel("codex-model"))
-	r.SecretResolver = secretsOf(map[string]string{"codex-subscription/auth.json": `{"tokens":{}}`})
+	r.CredentialResolver = secretsOf(map[string]string{"codex-subscription/auth.json": `{"tokens":{}}`})
 	task := agentTask("t", "codex-model")
 	if _, err := r.Reconcile(context.Background(), task, nil); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestTaskReconciler_CommandTaskIgnoresMissingAgentSecret(t *testing.T) {
 func TestTaskReconciler_CommandTaskGetsAgentEnvWhenSecretPresent(t *testing.T) {
 	r, mock := newTestReconciler(t)
 	r.ModelResolver = modelsOf(claudeModel("default-model"))
-	r.SecretResolver = secretsOf(map[string]string{"claude-subscription/CLAUDE_CODE_OAUTH_TOKEN": "tok"})
+	r.CredentialResolver = secretsOf(map[string]string{"claude-subscription/CLAUDE_CODE_OAUTH_TOKEN": "tok"})
 	task := commandTask("t")
 	if _, err := r.Reconcile(context.Background(), task, nil); err != nil {
 		t.Fatal(err)
