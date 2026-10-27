@@ -595,3 +595,21 @@ func TestUnmarshalYAMLLenient_NormalizesWorkspace(t *testing.T) {
 		t.Errorf("mcp servers = %v, want one named srv", got)
 	}
 }
+
+func TestTaskYAML_AgentRoundTrip(t *testing.T) {
+	in := "apiVersion: ax.io/v1alpha1\nkind: Task\nmetadata:\n  name: t\nspec:\n  agent:\n    model: m\n    prompt: do it\n"
+	var task v1alpha1.Task
+	if err := yaml.Unmarshal([]byte(in), &task); err != nil {
+		t.Fatal(err)
+	}
+	if got := task.GetSpec().GetAgent(); got.GetModel() != "m" || got.GetPrompt() != "do it" {
+		t.Fatalf("agent = %+v", got)
+	}
+	out, err := yaml.Marshal(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "prompt: do it") {
+		t.Fatalf("marshal lost agent: %s", out)
+	}
+}

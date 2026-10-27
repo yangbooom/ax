@@ -19,7 +19,7 @@ AX_IMAGE_REPO ?= gcr.io/ax-substrate/ate-images
 TASK_RUNNER_REPO ?= $(AX_IMAGE_REPO)/ax-task-runner
 CONTAINER_CLI ?= $(shell which podman 2>/dev/null || which docker 2>/dev/null)
 
-.PHONY: all build build-binaries build-task-runner install push push-task-runner deploy deploy-server deploy-redis apply-example test test-e2e test-e2e-head e2e-setup e2e-run e2e-cleanup clean
+.PHONY: proto all build build-binaries build-task-runner install push push-task-runner deploy deploy-server deploy-redis apply-example test test-e2e test-e2e-head e2e-setup e2e-run e2e-cleanup clean
 
 all: build
 
@@ -112,3 +112,13 @@ e2e-cleanup:
 clean:
 	@echo "==> Cleaning build artifacts..."
 	rm -rf bin/ .tmp/
+
+# Regenerate pkg/apis/v1alpha1/*.pb.go from ax.proto. Plugin versions are
+# pinned so the generated headers stay stable between contributors.
+proto:
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.0
+	PATH="$$(go env GOPATH)/bin:$$PATH" protoc -I . \
+	  --go_out=. --go_opt=paths=source_relative \
+	  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	  pkg/apis/v1alpha1/ax.proto
