@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/acp-go-sdk"
+	"github.com/google/ax/internal/agent"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 )
 
@@ -69,7 +71,8 @@ type SetupResult struct {
 	ClonedRepos   []string
 	SkillsMounted string
 	IsMaidenRun   bool
-	// BootstrapRan reports whether the Antigravity agent ran to completion for the goal.
+	// BootstrapRan reports whether the goal agent (the configured ACP agent, or
+	// Antigravity) ran to completion for the goal.
 	BootstrapRan bool
 }
 
@@ -276,6 +279,9 @@ func setupSkills(skills *v1alpha1.SkillsConfig) string {
 // skipped with a log line. Failures are logged and otherwise ignored so the task's own
 // command still starts.
 func runBootstrap(ctx context.Context, goal, targetPath string) bool {
+	if kind, model, ok := agent.FromEnv(); ok {
+		return runAgentBootstrap(ctx, kind, model, goal, targetPath)
+	}
 	if _, err := os.Stat(bootstrapScriptPath); err != nil {
 		slog.Info("Antigravity bootstrap script not installed; skipping", "script", bootstrapScriptPath)
 		return false
@@ -313,6 +319,36 @@ func runBootstrap(ctx context.Context, goal, targetPath string) bool {
 	}
 	slog.Info("Antigravity bootstrap completed successfully")
 	return true
+}
+
+// runAgentBootstrap hands the goal to the configured ACP agent (Claude Code or
+// Codex) and reports whether the turn ended normally.
+func runAgentBootstrap(ctx context.Context, kind agent.Kind, model, goal, targetPath string) bool {
+	timeout := bootstrapTimeout()
+	slog.Info("invoking workspace bootstrap agent with goal", "agent", kind, "goal", goal, "dir", targetPath, "timeout", timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	reason, err := agent.Run(ctx, agent.Spec{
+		Kind:   kind,
+		Model:  model,
+		Cwd:    targetPath,
+		Prompt: "Set up the workspace directory " + targetPath + " (your current working directory) according to the following goal: " + goal + ". Only create or modify files inside it.",
+		Env:    os.Environ(),
+		Output: os.Stdout,
+	})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		slog.Warn("workspace bootstrap agent timed out (continuing)", "agent", kind, "timeout", timeout)
+	case err != nil:
+		slog.Warn("workspace bootstrap agent failed (continuing)", "agent", kind, "error", err)
+	case reason != acp.StopReasonEndTurn:
+		slog.Warn("workspace bootstrap agent stopped early (continuing)", "agent", kind, "reason", reason)
+	default:
+		slog.Info("workspace bootstrap agent completed successfully", "agent", kind)
+		return true
+	}
+	return false
 }
 
 // bootstrapTimeout returns the configured bootstrap timeout, falling back to the default
