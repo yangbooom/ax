@@ -83,6 +83,10 @@ message TaskSpec {
   // agent runs an ACP agent (Claude Code or Codex) with a prompt as the task
   // body instead of spec.command. Exactly one of command and agent may be set.
   AgentSpec agent = 7;
+  // Hosts the task's sandbox may reach over TLS on port 443. Agent Substrate
+  // denies all other egress, DNS included, so an agent task must list its
+  // model API here. The controller turns it into the actor's EgressPolicy.
+  EgressSpec egress = 8;
 }
 
 message EnvVar {
@@ -114,6 +118,14 @@ message AgentSpec {
   // prompt is the single user turn sent to the agent, run with the workspace
   // path as its working directory.
   string prompt = 2;
+}
+
+// EgressSpec lists the hostnames a task may connect to on port 443 (TLS
+// passthrough). A name is a lowercase DNS name, optionally with "*." as its
+// leftmost label ("*.example.com" matches one label); "*" alone allows every
+// host.
+message EgressSpec {
+  repeated string hosts = 1;
 }
 
 message TaskStatus {

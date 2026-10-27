@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -278,6 +279,32 @@ func ValidateName(s string) error {
 	return nil
 }
 
+// egressHostnameRegexp is a lowercase DNS name with an optional "*." leftmost
+// label, the pattern syntax Agent Substrate accepts in an egress policy.
+var egressHostnameRegexp = regexp.MustCompile(`^(\*\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+// ValidateEgressHostname reports whether s is a hostname pattern a Task may
+// list under spec.egress: "*", or a lowercase DNS name of at most 253
+// characters, optionally starting with "*." for one wildcard label. URLs,
+// ports, IP addresses and trailing dots are rejected.
+func ValidateEgressHostname(s string) error {
+	if s == "*" {
+		return nil
+	}
+	if s == "" || len(s) > 253 || net.ParseIP(s) != nil || !egressHostnameRegexp.MatchString(s) {
+		return errors.New(`must be "*" or a lowercase DNS name, optionally starting with "*."`)
+	}
+	// A top-level label made only of digits is not a DNS name; it is how an
+	// IP-like string such as 999.1.1.1 or a.123 slips past net.ParseIP.
+	if last := s[strings.LastIndex(s, ".")+1:]; strings.Trim(last, "0123456789") == "" {
+		return errors.New("must not end in a numeric label")
+	}
+	return nil
+}
+
+// MaxEgressHosts is how many hosts Agent Substrate accepts in one rule.
+const MaxEgressHosts = 256
+
 // ValidateObjectMeta checks a resource's name and, when set, its atespace. An
 // empty atespace is fine here; the API server defaults it.
 func ValidateObjectMeta(meta *ObjectMeta) error {
@@ -337,6 +364,19 @@ func ValidateTask(t *Task) error {
 		if a.GetPrompt() == "" {
 			return errors.New("spec.agent: prompt is required")
 		}
+	}
+	if hosts := spec.GetEgress().GetHosts(); len(hosts) > MaxEgressHosts {
+		return fmt.Errorf("spec.egress: at most %d hosts, got %d", MaxEgressHosts, len(hosts))
+	}
+	seen := map[string]bool{}
+	for _, h := range spec.GetEgress().GetHosts() {
+		if err := ValidateEgressHostname(h); err != nil {
+			return fmt.Errorf("spec.egress: hostname %q: %w", h, err)
+		}
+		if seen[h] {
+			return fmt.Errorf("spec.egress: duplicate host %q", h)
+		}
+		seen[h] = true
 	}
 	return ValidateResources(spec.GetResources())
 }
