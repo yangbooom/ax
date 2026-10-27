@@ -89,3 +89,21 @@ func TestClient_SessionUpdate_StreamsText(t *testing.T) {
 		t.Fatalf("thought chunk leaked: %q", out)
 	}
 }
+
+func TestClient_SessionUpdate_JoinsStreamedChunks(t *testing.T) {
+	var buf bytes.Buffer
+	c := newClient(t.TempDir(), &buf)
+	ctx := context.Background()
+	// Agents stream a message a few tokens at a time; the log must read as prose.
+	for _, chunk := range []string{"Created", " `hello", ".txt`", " with hello."} {
+		_ = c.SessionUpdate(ctx, acp.SessionNotification{Update: acp.UpdateAgentMessageText(chunk)})
+	}
+	_ = c.SessionUpdate(ctx, acp.SessionNotification{Update: acp.StartToolCall("tc", "run tests", acp.WithStartStatus(acp.ToolCallStatusPending))})
+	_ = c.SessionUpdate(ctx, acp.SessionNotification{Update: acp.StartToolCall("tc2", "no status")})
+	_ = c.SessionUpdate(ctx, acp.SessionNotification{Update: acp.UpdateAgentMessageText("Done.")})
+	c.finish()
+	want := "Created `hello.txt` with hello.\n[tool] run tests (pending)\n[tool] no status\nDone.\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}

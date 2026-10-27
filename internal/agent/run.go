@@ -95,8 +95,10 @@ func Run(ctx context.Context, s Spec) (acp.StopReason, error) {
 		_ = cmd.Wait()
 		close(exited)
 	}()
-	conn := acp.NewClientSideConnection(newClient(s.Cwd, s.Output), stdin, stdout)
+	cl := newClient(s.Cwd, s.Output)
+	conn := acp.NewClientSideConnection(cl, stdin, stdout)
 	defer stop(cmd, stdin, exited)
+	defer cl.finish()
 
 	// Each request races against the adapter dying, so a crash before an
 	// answer is an error rather than a hang.

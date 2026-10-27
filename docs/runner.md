@@ -157,7 +157,12 @@ AX provisions a dedicated Agent Substrate actor template for each distinct image
 The default runner accepts its specs from files as well as the environment, which makes it easy to run outside a cluster. Your own runner should offer something similar:
 
 ```bash
-ax-task-runner --task-file task.yaml --workspace-file code.yaml --port 8080 --metadata-port 8099
+ax-task-runner --task-file task.yaml --workspace-file code.yaml --port 8080 --metadata-port 8099 --state-dir /tmp/ax-state
+
+# For a spec.agent task, name the agent and give it a credential the way the
+# control plane would; AX_AGENT_COMMAND points at an adapter that is not on PATH.
+AX_AGENT=claude-code CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)" \
+  ax-task-runner --task-file agent-task.yaml --port 8080 --metadata-port 8099 --state-dir /tmp/ax-state
 
 # In another shell:
 curl -i http://127.0.0.1:8080/readyz

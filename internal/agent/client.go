@@ -32,6 +32,9 @@ import (
 type client struct {
 	cwd string
 	out io.Writer
+	// midLine is true while the last message chunk written did not end a line,
+	// so the next non-message line can start on a line of its own.
+	midLine bool
 }
 
 var _ acp.Client = (*client)(nil)
@@ -68,27 +71,45 @@ func findOption(opts []acp.PermissionOption, kind acp.PermissionOptionKind) (acp
 	return acp.PermissionOption{}, false
 }
 
-// SessionUpdate writes what the agent is doing to out. Thought chunks are
-// dropped: they are not part of the agent's answer.
+// SessionUpdate writes what the agent is doing to out. Message chunks are
+// streamed as the agent sends them, a few tokens at a time, so they are
+// written without added line breaks; tool calls and plans get a line each.
+// Thought chunks are dropped: they are not part of the agent's answer.
 func (c *client) SessionUpdate(_ context.Context, params acp.SessionNotification) error {
 	u := params.Update
 	switch {
 	case u.AgentMessageChunk != nil:
-		if t := u.AgentMessageChunk.Content.Text; t != nil {
-			fmt.Fprintln(c.out, t.Text)
+		if t := u.AgentMessageChunk.Content.Text; t != nil && t.Text != "" {
+			fmt.Fprint(c.out, t.Text)
+			c.midLine = !strings.HasSuffix(t.Text, "\n")
 		}
 	case u.ToolCall != nil:
-		fmt.Fprintf(c.out, "[tool] %s (%s)\n", u.ToolCall.Title, u.ToolCall.Status)
+		c.finish()
+		if u.ToolCall.Status == "" {
+			fmt.Fprintf(c.out, "[tool] %s\n", u.ToolCall.Title)
+		} else {
+			fmt.Fprintf(c.out, "[tool] %s (%s)\n", u.ToolCall.Title, u.ToolCall.Status)
+		}
 	case u.ToolCallUpdate != nil:
 		if u.ToolCallUpdate.Status != nil {
+			c.finish()
 			fmt.Fprintf(c.out, "[tool] %s %s\n", u.ToolCallUpdate.ToolCallId, *u.ToolCallUpdate.Status)
 		}
 	case u.Plan != nil:
+		c.finish()
 		for _, e := range u.Plan.Entries {
 			fmt.Fprintf(c.out, "[plan] %s %s\n", e.Status, e.Content)
 		}
 	}
 	return nil
+}
+
+// finish ends an unterminated message line, if there is one.
+func (c *client) finish() {
+	if c.midLine {
+		fmt.Fprintln(c.out)
+		c.midLine = false
+	}
 }
 
 func (c *client) ReadTextFile(_ context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
