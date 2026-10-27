@@ -72,6 +72,18 @@ spec:
   # agent replaces command: one prompt, run in /workspace by the Model's agent.
   agent:
     prompt: "Find the flaky test under src/sync and make it deterministic. Commit on a branch."
+  # Hosts the sandbox may reach; Substrate denies everything else. Claude Code
+  # needs the first five, the git clone above needs GitHub.
+  egress:
+    hosts:
+      - api.anthropic.com
+      - "*.anthropic.com"
+      - claude.ai
+      - "*.claude.ai"
+      - "*.claude.com"
+      - github.com
+      - codeload.github.com
+      - objects.githubusercontent.com
   resources:
     limits:
       cpu: "2"

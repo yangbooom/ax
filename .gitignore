@@ -10,3 +10,4 @@ bin/
 
 cmd/ax-task-runner/__pycache__/antigravity_bootstrap.cpython-313.pyc
 .vscode/
+.DS_Store

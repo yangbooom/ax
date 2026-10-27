@@ -31,6 +31,9 @@ spec:
     path: "/workspace"   # optional; this is the default
     goal: "Install dependencies and run the test suite"   # the atespace's agent prepares the workspace to this goal on first run
 
+  egress:
+    hosts: ["api.example.com", "*.example.com"]   # hosts the sandbox may reach over TLS; everything else is denied, see below
+
   debug: true   # serve guest services inside the sandbox so `ax ssh` works; off by default
 ```
 
@@ -61,6 +64,12 @@ spec:
 `agent` and `command` are mutually exclusive, and `prompt` is required. Which agent runs, with which vendor model and credential, comes from the `Model` named by `agent.model`, or `default-model` in the task's atespace when it is left out. The Model's `provider` must be `claude-code` or `codex`; a task whose Model is missing, has another provider, or has no credential in its Secret is marked `Failed` with reason `ModelNotFound`, `UnsupportedProvider`, or `CredentialNotFound`. See [Claude Code and Codex](#claude-code-and-codex-subscription) below for the Model and Secret.
 
 A Workspace `goal` on a task without `spec.agent` also runs on the atespace's `default-model` agent when that Model is an ACP provider with a credential; otherwise it falls back to Antigravity with `GEMINI_API_KEY`, as before.
+
+### Reaching the network
+
+Agent Substrate gives every sandbox default-deny networking: with no policy, no outbound connection is allowed and DNS for any other name is refused. `spec.egress.hosts` lists the hosts the task may reach over TLS on port 443. The controller writes them into the actor's `EgressPolicy` as one `tls_passthrough` rule right after the actor is created, before it is first resumed, so the agent's first API call and the workspace's `git` clones already go through. Traffic is passed through, not intercepted, so nothing has to trust a certificate inside the sandbox; cleartext HTTP and other ports are not supported.
+
+A name is a lowercase DNS name, optionally with `*.` as its leftmost label (`*.anthropic.com` matches `api.anthropic.com` but not `anthropic.com` or `a.b.anthropic.com`), or `*` for every host. URLs, ports and IP addresses are rejected by `ax apply`. Claude Code needs `api.anthropic.com`, `*.anthropic.com`, `claude.ai`, `*.claude.ai` and `*.claude.com` (verified on a cluster); Codex is expected to need `chatgpt.com`, `*.chatgpt.com`, `openai.com` and `*.openai.com` (not yet verified); a workspace cloned from GitHub needs `github.com`, `codeload.github.com` and `objects.githubusercontent.com`. A policy Substrate rejects marks the task `Failed` with reason `EgressPolicyFailed`. A task without `egress` keeps the default: no network at all.
 
 ### Sizing the sandbox
 

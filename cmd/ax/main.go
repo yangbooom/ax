@@ -718,6 +718,9 @@ func runDescribe(serverURL, atespace string, args []string) error {
 			fmt.Printf("Agent:        model=%s\n", model)
 			fmt.Printf("Prompt:       %q\n", a.GetPrompt())
 		}
+		if hosts := task.Spec.GetEgress().GetHosts(); len(hosts) > 0 {
+			fmt.Printf("Egress:       %s\n", strings.Join(hosts, ", "))
+		}
 	}
 
 	if len(conditions) > 0 {
