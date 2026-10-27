@@ -56,6 +56,10 @@ type mockControlServer struct {
 	// createTemplateErr, when set, is returned by CreateActorTemplate to stand in
 	// for Substrate rejecting a template (for example an invalid quantity).
 	createTemplateErr error
+	// Egress policies by "atespace/actor"; see reconciler_egress_test.go.
+	egressPolicies           map[string]*ateapipb.EgressPolicy
+	egressPolicyErr          error
+	egressPolicyAfterSuspend bool
 }
 
 // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.

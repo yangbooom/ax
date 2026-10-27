@@ -263,6 +263,22 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, ws 
 		return task, fmt.Errorf("ensuring actor: %w", err)
 	}
 
+	// 3b. Egress: the sandbox is default-deny, so the policy has to exist before
+	// the actor is ever resumed. Doing it right after creation, on every pass,
+	// also repairs a policy someone changed by hand.
+	if hosts := task.GetSpec().GetEgress().GetHosts(); len(hosts) > 0 {
+		if err := r.client.EnsureActorEgressPolicy(ctx, atespace, actorName, hosts); err != nil {
+			if substrate.IsTransientError(err) {
+				r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
+				task.Status.Phase = "Pending"
+				return task, fmt.Errorf("ensuring egress policy: %w", err)
+			}
+			r.setNotReady(task, "EgressPolicyFailed", err.Error(), now)
+			task.Status.Phase = "Failed"
+			return task, fmt.Errorf("ensuring egress policy: %w", err)
+		}
+	}
+
 	// 4. Suspend or Resume the Actor
 	// Tasks are suspended by default upon creation until explicitly resumed to "Running".
 	if task.Status.Phase == "Suspended" || task.Status.Phase == "" {
