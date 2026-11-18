@@ -17,6 +17,7 @@ package substrate
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -491,6 +492,16 @@ func TestResourceLimits(t *testing.T) {
 				t.Fatalf("ResourceLimits() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// The guest needs SETUID and SETGID to drop to a non-root account (runuser,
+// PostgreSQL); ATE's default actor capabilities do not include them.
+func TestBuildActorTemplate_GuestCanSwitchUser(t *testing.T) {
+	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "", nil, nil, "", nil)
+	got := tmpl.GetContainers()[0].GetSecurityContext().GetCapabilities().GetAdd()
+	if want := []string{"SETUID", "SETGID"}; !slices.Equal(got, want) {
+		t.Fatalf("guest capabilities add = %v, want %v", got, want)
 	}
 }
 

@@ -348,6 +348,10 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
+			// ATE's default actor capabilities are AUDIT_WRITE, KILL and NET_BIND_SERVICE.
+			// SETUID and SETGID let the guest drop to a non-root account (runuser,
+			// PostgreSQL) so untrusted code never runs as the runner's uid 0.
+			SecurityContext: &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: []string{"SETUID", "SETGID"}}},
 			WakeupProbe: &ateapipb.WakeupProbe{
 				HttpGet: &ateapipb.HttpGetAction{
 					Path: "/readyz",
